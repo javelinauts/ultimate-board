@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>アルティメット戦術ボード</title>
+<style>
+/*
+VOICE: 道具そのもの。余計な装飾なし
+IDEA: サイドラインで広げる戦術ボード
+PICTURE: Unity のボードが画面全体
+COLOUR: 芝の深緑、白線、黄色のアクセント
+TYPE / LAYOUT: システムフォント、全画面キャンバス、ダイアログは中央に1枚
+*/
+html,body{margin:0;height:100%;background:#0d1a10;overflow:hidden;overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#unity-canvas{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;display:block;background:#12381c;outline:none;touch-action:none}
+#loading{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:#e8f0ea;font:16px/1.5 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;background:#0d1a10;padding:24px;text-align:center}
+#loading h1{margin:0;font-size:22px;font-weight:700;letter-spacing:.02em}
+#bar{width:min(280px,72vw);height:8px;border-radius:4px;background:#24402b;overflow:hidden}
+#fill{height:100%;width:0;background:#f2c94c;transition:width .2s}
+#note{font-size:13px;color:#a9bcae}
+#err{color:#ffb1a6;max-width:86vw;display:none;font-size:14px}
+.dlg{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:10;padding:16px}
+.dlg form{background:#1c2a20;color:#eef3ef;padding:20px;border-radius:14px;width:min(100%,440px);display:flex;flex-direction:column;gap:12px;font:16px/1.45 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+.dlg label{font-weight:700}
+.dlg p{margin:0;font-size:14px;color:#b9c9bd}
+.dlg input,.dlg textarea{font:16px/1.4 inherit;font-family:inherit;padding:12px;border-radius:8px;border:1px solid #4b6352;background:#0f1912;color:#fff;-webkit-user-select:text;user-select:text;width:100%;box-sizing:border-box}
+.dlg textarea{min-height:140px;resize:vertical;font-size:14px;word-break:break-all}
+.dlg input:focus,.dlg textarea:focus{outline:2px solid #f2c94c;outline-offset:1px}
+.row{display:flex;gap:10px}
+.row>*{flex:1;min-height:46px;font-size:16px;border-radius:8px;border:0;background:#2f4a36;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;text-decoration:none;font-family:inherit}
+.row .primary{background:#f2c94c;color:#1a1a1a;font-weight:700}
+.row .line{background:#06c755;color:#fff;font-weight:700}
+.row>*:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.status{min-height:1.4em;font-size:14px;color:#f2c94c}
+</style>
+</head>
+<body>
+<canvas id="unity-canvas" tabindex="-1"></canvas>
+
+<div id="loading">
+  <h1>アルティメット戦術ボード</h1>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="note">読み込み中…（初回は少し時間がかかります）</div>
+  <div id="err"></div>
+</div>
+
+<!-- 作戦名の入力 -->
+<div class="dlg" id="name-dlg">
+  <form id="name-form">
+    <label for="name-input">作戦の名前</label>
+    <input id="name-input" maxlength="40" autocomplete="off" enterkeyhint="done">
+    <div class="row">
+      <button type="button" data-close>キャンセル</button>
+      <button type="submit" class="primary">決定</button>
+    </div>
+  </form>
+</div>
+
+<!-- コードで送る -->
+<div class="dlg" id="share-dlg">
+  <form id="share-form">
+    <label for="share-text">この作戦を送る</label>
+    <p>下の文章をそのままLINEなどで送ってください。受け取った人は「作戦 保存/読込」→「コードを読み込む」に貼り付けると開けます。</p>
+    <textarea id="share-text" readonly></textarea>
+    <div class="status" id="share-status" aria-live="polite"></div>
+    <div class="row">
+      <button type="button" id="share-copy" class="primary">コピー</button>
+      <a id="share-line" class="line" href="#" target="_blank" rel="noopener">LINEで送る</a>
+    </div>
+    <div class="row"><button type="button" data-close>閉じる</button></div>
+  </form>
+</div>
+
+<!-- コードを読み込む -->
+<div class="dlg" id="import-dlg">
+  <form id="import-form">
+    <label for="import-text">作戦のコードを貼り付け</label>
+    <p>LINEで受け取ったメッセージを、まるごと貼り付けてかまいません。</p>
+    <textarea id="import-text" placeholder="UB1:… で始まるコードを含む文章"></textarea>
+    <div class="row">
+      <button type="button" data-close>キャンセル</button>
+      <button type="submit" class="primary">読み込む</button>
+    </div>
+  </form>
+</div>
+
+<script src="Build/WebGLBuild.loader.js"></script>
+<script>
+{
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('unity-canvas');
+  let instance = null;
+  const send = (method, value) => { if (instance) instance.SendMessage('TacticsBoard', method, value); };
+
+  // ── ダイアログ共通 ──
+  const open = (dlg, focusEl) => {
+    dlg.style.display = 'flex';
+    if (focusEl) setTimeout(() => focusEl.focus(), 30);
+  };
+  const close = (dlg) => {
+    dlg.style.display = 'none';
+    if (document.activeElement) document.activeElement.blur();
+    canvas.focus();
+  };
+  for (const dlg of document.querySelectorAll('.dlg')) {
+    for (const b of dlg.querySelectorAll('[data-close]')) b.addEventListener('click', () => close(dlg));
+  }
+  // 入力欄のキー操作を Unity に渡さない (Unity が横取りすると文字が打てないため)
+  for (const el of document.querySelectorAll('.dlg input, .dlg textarea')) {
+    for (const t of ['keydown', 'keypress', 'keyup']) el.addEventListener(t, (e) => e.stopPropagation());
+  }
+
+  // ── 作戦名の入力 (Unity → ubAskName → OnWebName) ──
+  const nameDlg = $('name-dlg'), nameInput = $('name-input');
+  window.ubAskName = (current) => {
+    nameInput.value = current || '';
+    open(nameDlg, nameInput);
+  };
+  $('name-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    close(nameDlg);
+    send('OnWebName', nameInput.value.trim().slice(0, 40));
+  });
+
+  // ── コードで送る (Unity → ubShowShare) ──
+  const shareDlg = $('share-dlg'), shareText = $('share-text'), shareStatus = $('share-status');
+  window.ubShowShare = (text) => {
+    shareText.value = text;
+    shareStatus.textContent = '';
+    $('share-line').href = 'https://line.me/R/share?text=' + encodeURIComponent(text);
+    open(shareDlg);
+  };
+  $('share-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(shareText.value);
+      shareStatus.textContent = 'コピーしました';
+    } catch (_) {
+      // クリップボードが使えない環境では、文字を選択状態にして手動コピーしてもらう
+      shareText.focus();
+      shareText.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) {}
+      shareStatus.textContent = ok ? 'コピーしました' : '文字を選択しました。長押しでコピーしてください';
+    }
+  });
+  $('share-form').addEventListener('submit', (e) => e.preventDefault());
+
+  // ── コードを読み込む (Unity → ubAskImport → OnWebImport) ──
+  const importDlg = $('import-dlg'), importText = $('import-text');
+  window.ubAskImport = () => {
+    importText.value = '';
+    open(importDlg, importText);
+  };
+  $('import-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    close(importDlg);
+    send('OnWebImport', importText.value);
+  });
+
+  // ページ全体がスクロール・拡大しないようにする (盤面のピンチ操作を優先)
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener('touchmove', (e) => { if (e.target === canvas) e.preventDefault(); }, { passive: false });
+
+  createUnityInstance(canvas, {
+    dataUrl: 'Build/WebGLBuild.data.unityweb',
+    frameworkUrl: 'Build/WebGLBuild.framework.js.unityweb',
+    codeUrl: 'Build/WebGLBuild.wasm.unityweb',
+    streamingAssetsUrl: 'StreamingAssets',
+    companyName: 'DefaultCompany',
+    productName: 'Ultimate board',
+    productVersion: '1.0',
+    matchWebGLToCanvasSize: true,
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+  }, (p) => { $('fill').style.width = Math.round(p * 100) + '%'; })
+    .then((inst) => { instance = inst; $('loading').style.display = 'none'; })
+    .catch((e) => {
+      const err = $('err');
+      err.textContent = '読み込めませんでした: ' + e;
+      err.style.display = 'block';
+    });
+}
+</script>
+</body>
+</html>
